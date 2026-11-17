@@ -1,0 +1,145 @@
+# Reusable CI for repositories built by the autonomous software factory (cpp). A repository calls it from its own
+# .github/workflows/ci.yml:
+#   jobs:
+#     ci:
+#       uses: Trysac/factory-ci/.github/workflows/cpp.yml@v1
+#       secrets: inherit
+# The jobs only re-run the repository's own gates (its scripts/check.cmake), so one release here updates the CI of
+# every caller without a pull request per repository. Every job is skipped while the calling repository is private.
+# The toolchain matches the factory's gates image (docker/cpp-gates.Dockerfile): LLVM 23 from apt.llvm.org (signing
+# key checked against its fingerprint), Doxygen 1.18.0 checked against its SHA-256, and vcpkg at the commit of the
+# repository's builtin-baseline. Linux only for now: a Windows job needs its own preset (clang-cl or MSVC with the
+# runtime vcpkg's ports use), which is pending (odd/tasks/new-language-templates.md T6).
+name: CI (cpp)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_APT_SIGNER: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+  DOXYGEN_SHA256: 14fa81bdc34171edb5f1f02b1d60e74802f0439b77fa44e592565d517d72df90
+
+jobs:
+  gates:
+    if: ${{ !github.event.repository.private }}
+    name: gates (ubuntu-latest)
+    runs-on: ubuntu-latest
+    env:
+      # gitleaks runs in its own job below with the official action; the dependency audit needs OSV-Scanner,
+      # which the conformance job installs.
+      FABRICA_ALLOW_MISSING_GITLEAKS: "1"
+      FABRICA_ALLOW_OFFLINE_AUDIT: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: toolchain (LLVM 23, Ninja, Doxygen, vcpkg at the baseline)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm.gpg >/dev/null
+          gpg --show-keys --with-colons /usr/share/keyrings/llvm.gpg | grep -q "^fpr:::::::::${LLVM_APT_SIGNER}:$"
+          codename="$(lsb_release -cs)"
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 clang-format-23 clang-tidy-23 llvm-23 \
+            libclang-rt-23-dev ninja-build
+          for tool in clang clang++ clang-format clang-tidy llvm-cov llvm-profdata; do
+            sudo ln -sf "/usr/bin/${tool}-23" "/usr/local/bin/${tool}"
+          done
+          curl -fsSL -o "$RUNNER_TEMP/doxygen.tar.gz" \
+            https://github.com/doxygen/doxygen/releases/download/Release_1_18_0/doxygen-1.18.0.linux.bin.tar.gz
+          echo "${DOXYGEN_SHA256}  $RUNNER_TEMP/doxygen.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/doxygen.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/doxygen-1.18.0/bin" >> "$GITHUB_PATH"
+          baseline="$(jq -r '."builtin-baseline"' vcpkg.json)"
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$baseline"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          {
+            echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg"
+            echo "VCPKG_DISABLE_METRICS=1"
+            echo "VCPKG_FORCE_SYSTEM_BINARIES=1"
+            echo "CC=clang"
+            echo "CXX=clang++"
+          } >> "$GITHUB_ENV"
+      - run: cmake -P scripts/configure.cmake
+      - run: cmake -P scripts/check.cmake
+
+  # CI-only tier: the full suite, including the test cases tagged [conformance] (external tools or downloads), and
+  # the dependency audit. The gates job above runs exactly the local tier, so its coverage is the one the factory
+  # measured.
+  conformance:
+    if: ${{ !github.event.repository.private }}
+    name: conformance (full suite)
+    runs-on: ubuntu-latest
+    env:
+      FABRICA_ALLOW_MISSING_GITLEAKS: "1"
+      FABRICA_CI: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: toolchain (LLVM 23, Ninja, Doxygen, vcpkg at the baseline)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm.gpg >/dev/null
+          gpg --show-keys --with-colons /usr/share/keyrings/llvm.gpg | grep -q "^fpr:::::::::${LLVM_APT_SIGNER}:$"
+          codename="$(lsb_release -cs)"
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 clang-format-23 clang-tidy-23 llvm-23 \
+            libclang-rt-23-dev ninja-build
+          for tool in clang clang++ clang-format clang-tidy llvm-cov llvm-profdata; do
+            sudo ln -sf "/usr/bin/${tool}-23" "/usr/local/bin/${tool}"
+          done
+          curl -fsSL -o "$RUNNER_TEMP/doxygen.tar.gz" \
+            https://github.com/doxygen/doxygen/releases/download/Release_1_18_0/doxygen-1.18.0.linux.bin.tar.gz
+          echo "${DOXYGEN_SHA256}  $RUNNER_TEMP/doxygen.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/doxygen.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/doxygen-1.18.0/bin" >> "$GITHUB_PATH"
+          baseline="$(jq -r '."builtin-baseline"' vcpkg.json)"
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$baseline"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          {
+            echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg"
+            echo "VCPKG_DISABLE_METRICS=1"
+            echo "VCPKG_FORCE_SYSTEM_BINARIES=1"
+            echo "CC=clang"
+            echo "CXX=clang++"
+          } >> "$GITHUB_ENV"
+      - run: cmake -P scripts/configure.cmake
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: stable
+      # Security scanners for the CI tier (FABRICA_CI=1 fails when one is missing). Semgrep CE runs only the
+      # factory's rules in .semgrep/; OSV-Scanner is built from its pinned module (checked by the Go checksum DB).
+      - name: security scanners (Semgrep CE, OSV-Scanner)
+        shell: bash
+        run: |
+          pipx install semgrep==1.180.0
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # Optional, project-provided tool installation for the conformance tier. Only CI runs it, never
+      # the factory or the local gates. Downloads must be verified against a pinned SHA-256.
+      - name: conformance tools (ci/conformance-setup.sh, optional)
+        shell: bash
+        run: |
+          if [ -f ci/conformance-setup.sh ]; then bash ci/conformance-setup.sh; else echo "no ci/conformance-setup.sh"; fi
+      - run: cmake -P scripts/check.cmake
+
+  secrets:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only needed if the repository belongs to a GitHub organization (free for personal accounts).
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
