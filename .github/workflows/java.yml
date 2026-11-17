@@ -37,8 +37,22 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - run: mvn --batch-mode --no-transfer-progress --quiet dependency:go-offline
-      - run: java scripts/Check.java
+      - if: runner.os != 'Windows'
+        run: |
+          mvn --batch-mode --no-transfer-progress --quiet dependency:go-offline
+          java scripts/Check.java
+      # Windows: Maven Surefire hands the forked JVM its settings as a Java properties file, where the default
+      # checkout path D:\a\u924-...\ reads as a malformed \uXXXX escape (every factory repository starts with u;
+      # LESSONS L100). Run from a drive letter mapped to the workspace instead.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          subst W: "$env:GITHUB_WORKSPACE"
+          Set-Location W:\
+          mvn --batch-mode --no-transfer-progress --quiet dependency:go-offline
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          java scripts/Check.java
+          exit $LASTEXITCODE
 
   # CI-only tier: the full suite, including the tests tagged conformance (external tools or downloads), and the
   # dependency audit. The gates job above runs exactly the local tier, so its coverage is the one the factory
