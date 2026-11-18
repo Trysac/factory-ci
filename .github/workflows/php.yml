@@ -36,6 +36,8 @@ jobs:
           php-version: '8.4'
           tools: composer:v2
           coverage: pcov
+          # Windows runners load no pdo_sqlite unless asked; SQLite-backed libraries failed only there (u952).
+          extensions: pdo_sqlite, sqlite3
       - run: composer install --no-interaction --no-progress --prefer-dist
       - run: php scripts/check.php
 
@@ -55,6 +57,8 @@ jobs:
           php-version: '8.4'
           tools: composer:v2
           coverage: pcov
+          # Windows runners load no pdo_sqlite unless asked; SQLite-backed libraries failed only there (u952).
+          extensions: pdo_sqlite, sqlite3
       - run: composer install --no-interaction --no-progress --prefer-dist
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
